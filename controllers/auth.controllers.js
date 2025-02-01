@@ -1,12 +1,29 @@
 // write the functions used in the http methods.
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import UserModel from '../models.js/user.model.js';
 import transporter from '../config/nodemailer.js';
 import userAuth from '../middlewares/user.auth.js';
 import dotenv from 'dotenv';
+import winston from 'winston';
+import Joi from 'joi';
 
 dotenv.config();
+
+
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  transports: [new winston.transports.Console(), new winston.transports.File({ filename: 'logs/error.log', level: 'error' })],
+});
+
+const registerSchema = Joi.object({
+  Name: Joi.string().min(3).required(),
+  email: Joi.string().email().required(),
+  password: Joi.string().min(8).max(20).required(),
+});
+
 
 export const getuser = (async (req, res) => {
   res.send('Hello World!')
@@ -14,42 +31,45 @@ export const getuser = (async (req, res) => {
 
 
 export const registeruser = (async (req, res) => {
-  console.log('Register endpoint hit');
+  logger.info('Register endpoint hit');
 
-        
+  const { error } = registerSchema.validate(req.body);
+  if (error) {
+    return res.status(400).json({ success: false, message: error.details[0].message });
+  }
 
-  const { name, email, password } = req.body;
+  const {Name, email, password} = req.body
 
-  if (!name || !email || !password) {
-    return res.status(404).json({sucess: false, message: 'Please enter all fields'});
+  if (!Name || !email || !password) {
+    return res.status(400).json({sucess: false, message: 'Please enter all fields'})
   }
 
   try {
-    const startTime = Date.now();
-    const existinguser = await UserModel.findOne({ email });
-    const userCheckTime = Date.now();
-    console.log(`Check existing user took ${userCheckTime - startTime}ms`);
+    const startTime = Date.now()
+    const existinguser = await UserModel.findOne({email})
+    const userCheckTime = Date.now()
+    console.log(`Check existing user took ${userCheckTime - startTime}ms`)
 
     if (existinguser){
-      return res.status(404).json({sucess:false, message: 'Email already exists'});
+      return res.status(409).json({sucess:false, message: 'Email already exists'})
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10;
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     const hashTime = Date.now();
-    console.log(`Hashing password took ${hashTime - userCheckTime}ms`);
+    console.log(`Hashing password took ${hashTime - userCheckTime}ms`)
 
 
-    const user = new UserModel({name , email, password: hashedPassword});
-    await user.save();
+    const user = new UserModel({Name , email, password: hashedPassword})
+    await user.save()
     const saveUserTime = Date.now();
     console.log(`Saving user took ${saveUserTime - hashTime}ms`);
 
-    const token = jwt.sign({id: user._id}, process.env.SECRET_KEY, {expiresIn: '7d'});
+    const token = jwt.sign({ id: user._id.toString() }, process.env.SECRET_KEY, {expiresIn: '7d'});
 
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite : process.env.NODE_ENV === 'production' ?
-      'none' : 'strict',
+      sameSite : process.env.NODE_ENV === 'production' ? 'none' : 'strict',
       maxAge : 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -66,9 +86,12 @@ export const registeruser = (async (req, res) => {
 
     await transporter.sendMail(mailOptions);
 
+    logger.info(`User registered successfully in ${Date.now() - startTime}ms`);
+
     return res.status(200).json({sucess:true, message: 'Successfully Registered'});
   }
   catch(error){
+    logger.error(`Registration error: ${error.message}`);
     res.status(500).json({sucess:false, message: error.message})
   }
 
